@@ -1,7 +1,8 @@
 package com.example.testbluepoop
 
 import android.Manifest
-import android.bluetooth.BluetoothAdapter
+import android.annotation.SuppressLint
+import android.bluetooth.BluetoothClass
 import android.bluetooth.BluetoothHeadset
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
@@ -26,7 +27,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.core.app.ActivityCompat
 import com.example.testbluepoop.ui.theme.TestBluePoopTheme
 import kotlinx.coroutines.flow.update
 
@@ -38,19 +38,20 @@ class MainActivity : ComponentActivity() {
     var audioManager: AudioManager? = null
     val launcher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
         if (it) {
+            setupBluePoopBroadcastListener(applicationContext)
             setupBluePoopAdapterListener(applicationContext)
             setupHeadSetBroadcastListener(applicationContext)
         }
     }
-    var proxy:BluetoothProfile? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         bluetoothManager = getSystemService(BluetoothManager::class.java)
         audioManager = getSystemService(AudioManager::class.java)
-        setupBluePoopBroadcastListener(applicationContext)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             launcher.launch(Manifest.permission.BLUETOOTH_CONNECT)
         } else {
+            setupBluePoopBroadcastListener(applicationContext)
             setupBluePoopAdapterListener(applicationContext)
             setupHeadSetBroadcastListener(applicationContext)
         }
@@ -65,46 +66,40 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun getHeadsetStateBluetooth(context: Context): String {
-
-        val adapter = bluetoothManager?.adapter
-        return when {
-            ActivityCompat.checkSelfPermission(
-                context,
-                Manifest.permission.BLUETOOTH_CONNECT
-            ) != PackageManager.PERMISSION_GRANTED -> {
-                "permission failed"
-            }
-
-            adapter?.getProfileConnectionState(BluetoothProfile.HEADSET) == BluetoothAdapter.STATE_CONNECTED -> {
-                "BluetoothAdapter.STATE_CONNECTED"
-            }
-
-            else -> {
-                "unexpected"
-            }
-        }
-
-    }
-
     private fun setupBluePoopBroadcastListener(context: Context) {
         val bluetoothReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 val action = intent.action
-                if (action == BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED) {
-                    val state = intent.getIntExtra(
-                        BluetoothHeadset.EXTRA_STATE,
-                        BluetoothHeadset.STATE_DISCONNECTED
-                    )
-                    if (state == BluetoothHeadset.STATE_CONNECTED) {
-                        vm.variantConnectionFirst.update { getHeadsetStateBluetooth(context) }
-                    } else if (state == BluetoothHeadset.STATE_DISCONNECTED) {
-                        vm.variantConnectionFirst.update { "STATE_DISCONNECTED" }
+                when (action) {
+                    BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED -> {
+                        val state = intent.getIntExtra(
+                            BluetoothHeadset.EXTRA_STATE,
+                            BluetoothHeadset.STATE_DISCONNECTED
+                        )
+                        if (state == BluetoothHeadset.STATE_CONNECTED) {
+                            vm.variantConnectionFirst.update { "STATE_CONNECTED" }
+                        } else if (state == BluetoothHeadset.STATE_DISCONNECTED) {
+                            vm.variantConnectionFirst.update { "STATE_DISCONNECTED" }
+                        }
+                    }
+
+                    BluetoothHeadset.ACTION_AUDIO_STATE_CHANGED -> {
+                        val state = intent.getIntExtra(
+                            BluetoothHeadset.EXTRA_STATE,
+                            BluetoothHeadset.STATE_AUDIO_DISCONNECTED
+                        )
+                        if (state == BluetoothHeadset.STATE_AUDIO_CONNECTED) {
+                            vm.variantConnectionFirst.update { "STATE_CONNECTED" }
+                        } else {
+                            vm.variantConnectionFirst.update { "STATE_DISCONNECTED" }
+                        }
                     }
                 }
+
             }
         }
         val filter = IntentFilter(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
+        filter.addAction(BluetoothHeadset.ACTION_AUDIO_STATE_CHANGED)
         context.registerReceiver(bluetoothReceiver, filter)
         listenersList.add(bluetoothReceiver)
     }
@@ -123,32 +118,51 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun setupBluePoopAdapterListener(context: Context) {
-
         val listener = object : BluetoothProfile.ServiceListener {
             override fun onServiceConnected(profile: Int, proxy: BluetoothProfile?) {
                 if (profile == BluetoothProfile.HEADSET) {
-                    this@MainActivity.proxy = proxy
-                   if (context.checkSelfPermission(
-                        Manifest.permission.BLUETOOTH_CONNECT
-                    ) == PackageManager.PERMISSION_GRANTED ) {
-                       val bluetoothHeadset = proxy as BluetoothHeadset
-                       val connectedDevices = bluetoothHeadset.connectedDevices
-                       if (connectedDevices.isNotEmpty()) {
-                           vm.variantConnectionSecond.update { "STATE_CONNECTED" }
-                       } else {
-                           vm.variantConnectionSecond.update { "STATE_EMPTY" }
-                       }
-                   } else {
-                       Toast.makeText(context, "permission error", Toast.LENGTH_SHORT)
-                           .show()
-                   }
-
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        if (context.checkSelfPermission(
+                                Manifest.permission.BLUETOOTH_CONNECT
+                            ) == PackageManager.PERMISSION_GRANTED
+                        ) {
+                            helper(proxy)
+                        } else {
+                            Toast.makeText(context, "permission error", Toast.LENGTH_SHORT)
+                                .show()
+                        }
+                    } else {
+                        helper(proxy)
+                    }
                 }
             }
 
             override fun onServiceDisconnected(profile: Int) {
-                vm.variantConnectionSecond.update { "wtf $profile" }
-                if (profile == BluetoothProfile.HEADSET) vm.variantConnectionSecond.update { "STATE_DISCONNECTED" }
+                if (profile == BluetoothProfile.HEADSET) vm.variantConnectionFirst.update { "STATE_DISCONNECTED" }
+            }
+
+            @SuppressLint("MissingPermission")
+            fun helper(proxy: BluetoothProfile?) {
+                val bluetoothHeadset = proxy as BluetoothHeadset
+                val connectedDevices = bluetoothHeadset.connectedDevices
+                if (connectedDevices.isNotEmpty()) {
+                    var connected = false
+                    var supportsAudio = false
+                    // check for a device that supports audio and is connected in our connected bluetooth devices.
+                    for (device in proxy.connectedDevices) {
+                        connected =
+                            proxy.getConnectionState(device) == BluetoothProfile.STATE_CONNECTED
+                        supportsAudio =
+                            device.bluetoothClass.hasService(BluetoothClass.Service.AUDIO)
+                        // we have found a connected device that supports audio, stop iterating and emit a success
+                        if (connected && supportsAudio) {
+                            break
+                        }
+                    }
+                    if (connected && supportsAudio) vm.variantConnectionFirst.update { "STATE_CONNECTED" }
+                } else {
+                    vm.variantConnectionFirst.update { "STATE_DISCONNECTED" }
+                }
             }
         }
         bluetoothManager?.adapter?.getProfileProxy(context, listener, BluetoothProfile.HEADSET)
@@ -163,13 +177,10 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainContent(vm: Vm, modifier: Modifier = Modifier) {
     val variantFirst by vm.variantConnectionFirst.collectAsState()
-    val variantSecond by vm.variantConnectionSecond.collectAsState()
     val manual by vm.headsetManual.collectAsState()
     Column(modifier = modifier) {
-        Log(text = "Variant1")
+        Log(text = "Headphone state")
         Log(text = variantFirst)
-        Log(text = "Variant2")
-        Log(text = variantSecond)
         Log(text = "headset manual(not bluepoop)")
         Log(text = manual)
     }
